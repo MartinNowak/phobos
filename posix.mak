@@ -190,6 +190,10 @@ $(EXTRA_MODULES_LINUX) $(EXTRA_MODULES_OSX) $(EXTRA_MODULES_FREEBSD) $(EXTRA_MOD
 # C files to be part of the build
 C_MODULES = $(addprefix etc/c/zlib/, adler32 compress crc32 deflate	\
 	gzclose gzlib gzread gzwrite infback inffast inflate inftrees trees uncompr zutil)
+
+# build OS specific aggregated libev
+C_MODULES+=$(addprefix etc/c/libev/, $(OS))
+
 C_FILES = $(addsuffix .c,$(C_MODULES))
 # C files that are not compiled (right now only zlib-related)
 C_EXTRAS = $(addprefix etc/c/zlib/, algorithm.txt ChangeLog crc32.h	\
@@ -200,6 +204,7 @@ gzguts.h zlib.3 zlib.h zutil.h)
 ALL_C_FILES = $(C_FILES) $(C_EXTRAS)
 
 OBJS = $(addsuffix $(DOTOBJ),$(addprefix $(ROOT)/,$(C_MODULES)))
+
 
 ################################################################################
 # Rules begin here
