@@ -164,7 +164,7 @@ STD_MODULES = $(addprefix std/, algorithm array base64 bigint bitmanip	\
 
 # Other D modules that aren't under std/
 EXTRA_MODULES := $(addprefix std/c/, stdarg stdio) $(addprefix etc/c/,	\
-        zlib) $(addprefix std/internal/math/, biguintcore biguintnoasm  \
+        libev zlib) $(addprefix std/internal/math/, biguintcore biguintnoasm  \
         biguintx86 gammafunction errorfunction)
 
 # OS-specific D modules
