@@ -83,14 +83,19 @@ class EventLoop
 
     struct FileWatcher
     {
-        void start()
+        ref FileWatcher start()
         {
+            ++data._refcount;
             ev_io_start(this.eventLoop.loop, &this.data.ev);
+            return this;
         }
 
-        void stop()
+        ref FileWatcher stop()
         {
             ev_io_stop(this.eventLoop.loop, &this.data.ev);
+            --data._refcount;
+            assert(data._refcount);
+            return this;
         }
 
         @property File file() { return this.data.file; }
@@ -104,6 +109,23 @@ class EventLoop
         this(Data* data)
         {
             this.data = data;
+            ++data._refcount;
+        }
+
+        ~this()
+        {
+            std.stdio.writeln("~FileWatcher", data._refcount);
+            if (--data._refcount == 0)
+                eventLoop.fileWatchers.destroy(data);
+        }
+
+        ref FileWatcher opAssign(FileWatcher other)
+        {
+            if (--data._refcount == 0)
+                eventLoop.fileWatchers.destroy(data);
+            this.data = other.data;
+            ++data._refcount;
+            return this;
         }
 
         extern(C) static void fileEvent(ev_loop* loop, ev_io* ev, int revents)
@@ -125,6 +147,7 @@ class EventLoop
             ev_io ev;
             FileWatcherCB cb;
             File file;
+            uint _refcount;
         }
         Data* data;
     }
@@ -142,13 +165,6 @@ class EventLoop
     FileWatcher addWatcher(File file, int events, FileWatcherCB cb)
     {
         return FileWatcher(this.fileWatchers.construct(this, file, events, cb));
-    }
-
-    void removeWatcher(FileWatcher fw)
-    {
-        if (fw.active)
-            fw.stop();
-        this.fileWatchers.destroy(fw.data);
     }
 
 protected:
@@ -182,7 +198,7 @@ unittest
         assert(w.file == file);
         file.writeLine(cont);
         file.seekSet(0);
-        loop.removeWatcher(w);
+        w.stop();
     }
 
     void read(EventLoop loop, EventLoop.FileWatcher w)
@@ -191,10 +207,10 @@ unittest
         calledRead = true;
         assert(w.file == file);
         assert(w.file.readLine() == cont);
-        loop.removeWatcher(w);
+        w.stop();
     }
 
-    loop.addWatcher(file, EV_WRITE, &write).start();
+    auto fw = loop.addWatcher(file, EV_WRITE, &write).start();
     loop.addWatcher(file, EV_READ, &read).start();
     loop.run();
     assert(calledWrite && calledRead);
