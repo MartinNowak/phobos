@@ -37,7 +37,7 @@ debug(StdEvent) static import std.stdio;
 
 import core.memory;
 import std.algorithm, std.array, std.bitmanip, std.conv, std.exception;
-import std.stream;
+import std.socket, std.stream;
 public import etc.c.libev;
 
 version(unittest)
@@ -114,7 +114,6 @@ class EventLoop
 
         ~this()
         {
-            std.stdio.writeln("~FileWatcher", data._refcount);
             if (--data._refcount == 0)
                 eventLoop.fileWatchers.destroy(data);
         }
@@ -167,17 +166,107 @@ class EventLoop
         return FileWatcher(this.fileWatchers.construct(this, file, events, cb));
     }
 
+
+    alias Callback!(void, EventLoop, SocketWatcher) SocketWatcherCB;
+
+    struct SocketWatcher
+    {
+        ref SocketWatcher start()
+        {
+            ++data._refcount;
+            ev_io_start(this.eventLoop.loop, &this.data.ev);
+            return this;
+        }
+
+        ref SocketWatcher stop()
+        {
+            ev_io_stop(this.eventLoop.loop, &this.data.ev);
+            --data._refcount;
+            assert(data._refcount);
+            return this;
+        }
+
+        @property Socket socket() { return this.data.sock; }
+        @property bool active() { return this.data.ev.active; }
+        @property bool pending() { return this.data.ev.pending; }
+
+    private:
+
+        EventLoop eventLoop() { return cast(EventLoop)this.data.ev.data; }
+
+        this(Data* data)
+        {
+            this.data = data;
+            ++data._refcount;
+        }
+
+        ~this()
+        {
+            if (--data._refcount == 0)
+                eventLoop.socketWatchers.destroy(data);
+        }
+
+        ref SocketWatcher opAssign(SocketWatcher other)
+        {
+            if (--data._refcount == 0)
+                eventLoop.socketWatchers.destroy(data);
+            this.data = other.data;
+            ++data._refcount;
+            return this;
+        }
+
+        extern(C) static void fileEvent(ev_loop* loop, ev_io* ev, int revents)
+        {
+            auto fw = SocketWatcher(cast(Data*)ev);
+            fw.data.cb.call(fw.eventLoop, fw);
+        }
+
+        struct Data
+        {
+            this(EventLoop loop, Socket sock, int events, SocketWatcherCB cb)
+            {
+                enforce(sock);
+                this.ev = ev_io(&fileEvent, sock.handle, events);
+                this.ev.data = cast(void*)loop;
+                this.sock = sock;
+                this.cb = cb;
+            }
+            ev_io ev;
+            SocketWatcherCB cb;
+            Socket sock;
+            uint _refcount;
+        }
+        Data* data;
+    }
+
+    SocketWatcher addWatcher(Socket sock, int events, SocketWatcherCB.Dg dg)
+    {
+        return this.addWatcher(sock, events, SocketWatcherCB(dg));
+    }
+
+    SocketWatcher addWatcher(Socket sock, int events, SocketWatcherCB.Fn fn)
+    {
+        return this.addWatcher(sock, events, SocketWatcherCB(fn));
+    }
+
+    SocketWatcher addWatcher(Socket sock, int events, SocketWatcherCB cb)
+    {
+        return SocketWatcher(this.socketWatchers.construct(this, sock, events, cb));
+    }
+
 protected:
     this(ev_loop* loop)
     {
         enforce(loop);
         this.loop = loop;
         this.fileWatchers.init(4096);
+        this.socketWatchers.init(4096);
     }
 
 private:
     ev_loop* loop;
     PoolAllocator!(EventLoop.FileWatcher.Data) fileWatchers;
+    PoolAllocator!(EventLoop.SocketWatcher.Data) socketWatchers;
 }
 
 
@@ -214,6 +303,60 @@ unittest
     loop.addWatcher(file, EV_READ, &read).start();
     loop.run();
     assert(calledWrite && calledRead);
+}
+
+
+unittest
+{
+    enum cont = "1234567890";
+
+    auto listener = new TcpSocket();
+    scope(exit) listener.close();
+    listener.blocking = false;
+    listener.bind(new InternetAddress(4444));
+    listener.listen(1);
+
+    auto sender = new TcpSocket();
+    scope(exit) sender.close();
+    sender.blocking = false;
+    sender.connect(new InternetAddress(4444));
+
+    auto loop = new EventLoop();
+    bool calledAccept, calledReceive, calledSend;
+
+    void send(EventLoop loop, EventLoop.SocketWatcher w)
+    {
+        w.stop();
+        assert(!calledAccept && !calledReceive);
+        calledSend = true;
+        assert(w.socket == sender);
+        w.socket.send(cont);
+    }
+
+    void receive(EventLoop loop, EventLoop.SocketWatcher w)
+    {
+        w.stop();
+        assert(calledAccept && calledSend);
+        calledReceive = true;
+        char[1024] buf;
+        auto len = w.socket.receive(buf);
+        assert(len > 0 && buf[0 .. len] == cont);
+        w.socket.close();
+    }
+
+    void accept(EventLoop loop, EventLoop.SocketWatcher w)
+    {
+        w.stop();
+        assert(!calledReceive && calledSend);
+        calledAccept = true;
+        assert(w.socket == listener);
+        loop.addWatcher(w.socket.accept, EV_READ, &receive).start();
+    }
+
+    loop.addWatcher(sender, EV_WRITE, &send).start();
+    loop.addWatcher(listener, EV_READ, &accept).start();
+    loop.run();
+    assert(calledSend && calledAccept && calledReceive);
 }
 
 
