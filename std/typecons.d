@@ -60,160 +60,219 @@ Example:
 
 struct Unique(T)
 {
-static if (is(T:Object))
-    alias T RefT;
-else
-    alias T * RefT;
-public:
-/+ Doesn't work yet
     /**
     The safe constructor. It creates the resource and
     guarantees unique ownership of it (unless the constructor
     of $(D T) publishes aliases of $(D this)),
     */
-    this(A...)(A args)
+    this(Args...)(auto ref Args args)
+    if(is(typeof(T(args))) && !(Args.length == 1 && (is(Args[0] : T) || is(Args[0] _ : Unique!U, U))))
     {
-        _p = new T(args);
+        emplace(&_val, args);
     }
-+/
 
     /**
     Constructor that takes an rvalue.
     It will ensure uniqueness, as long as the rvalue
     isn't just a view on an lvalue (e.g., a cast)
-    Typical usage:
+    Example:
     ----
+    Unique!Foo foo;
+    assert(foo is Foo.init);
+    foo = new Foo;
+    assert(foo !is Foo.init);
+    Unique!Foo foo2 = move(foo);
+    assert(foo is Foo.init);
+    ----
+    */
+    this(U)(auto ref U val) if (is(U == T) && !__traits(isRef, val))
+    {
+        move(val, _val);
+    }
+
+    this(U)(auto ref U val) if (!is(U == T) && is(U : T) && !__traits(isRef, val))
+    {
+        T conv = move(val);
+        move(conv, _val);
+    }
+
+    /**
+    Move constructor that takes an rvalue of Unique.
+    Supports implicit conversion to T.
+    Example:
+    ----
+    Unique!Base create()
+    {
+        Unique!Derived derived = new Derived;
+        derived.init();
+        return move(derived);
+    }
     Unique!(Foo) f = new Foo;
     ----
     */
-    this(RefT p)
+    this(U)(Unique!U u) if (is(U == T))
     {
-        writeln("Unique constructor with rvalue");
-        _p = p;
+        move(u._val, _val);
     }
-    /**
-    Constructor that takes an lvalue. It nulls its source.
-    The nulling will ensure uniqueness as long as there
-    are no previous aliases to the source.
-    */
-    this(ref RefT p)
-    {
-        _p = p;
-        writeln("Unique constructor nulling source");
-        p = null;
-        assert(p is null);
-    }
-/+ Doesn't work yet
-    /**
-    Constructor that takes a Unique of a type that is convertible to our type:
-    Disallow construction from lvalue (force the use of release on the source Unique)
-    If the source is an rvalue, null its content, so the destrutctor doesn't delete it
 
-    Typically used by the compiler to return $(D Unique) of derived type as $(D Unique)
-    of base type.
-
-    Example:
-    ----
-    Unique!(Base) create()
+    /// Ditto
+    this(U)(Unique!U u) if (is(U : T) && !is(U == T))
     {
-        Unique!(Derived) d = new Derived;
-        return d; // Implicit Derived->Base conversion
+        T conv = move(u._val);
+        move(conv, _val);
     }
-    ----
-    */
-    this(U)(ref Unique!(U) u) = null;
-    this(U)(Unique!(U) u)
-    {
-        _p = u._p;
-        u._p = null;
-    }
-+/
 
     ~this()
     {
-        writeln("Unique destructor of ", (_p is null)? null: _p);
-        delete _p;
-        _p = null;
+        clear(_val);
     }
-    bool isEmpty() const
-    {
-        return _p is null;
-    }
-    /** Returns a unique rvalue. Nullifies the current contents */
-    Unique release()
-    {
-        writeln("Release");
-        auto u = Unique(_p);
-        assert(_p is null);
-        writeln("return from Release");
-        return u;
-    }
-    /** Forwards member access to contents */
-    RefT opDot() { return _p; }
 
-/+ doesn't work yet!
+    @disable this(this);
+
+    // @@@BUG4424@@@ workaround
+    private mixin template _workaround4424()
+    {
+        @disable void opAssign(typeof(this) );
+    }
+    mixin _workaround4424;
+
+    void opAssign(U)(auto ref U val) if (is(U == T) && !__traits(isRef, val))
+    {
+        static if (is(T == class) || is(T == interface))
+            clear(_val);
+        move(val, _val);
+    }
+
+    void opAssign(U)(auto ref U val) if (!is(U == T) && is(U : T) && !__traits(isRef, val))
+    {
+        static if (hasElaborateDestructor!U || hasElaborateCopyConstructor!U)
+            T conv = move(val);
+        else
+            T conv = val;
+        this = move(conv);
+    }
+
+    void opAssign(U)(Unique!U u) if (is(U : T))
+    {
+        this = u.release;
+    }
+
     /**
-    Postblit operator is undefined to prevent the cloning of $(D Unique) objects
-    */
-    this(this) = null;
- +/
+    Example:
+    ----
+    File read(string path)
+    {
+        auto file = Unique!File(path, "r");
+        // use file
+        return file.release;
+    }
+    ----
+     */
+    @property T release()
+    {
+        T result = void;
+        static if (is(T == struct))
+        {
+            static T empty;
+            memcpy(&result, &_val, T.sizeof);
+            memcpy(&_val, &empty, T.sizeof);
+        }
+        else
+        {
+            result = _val;
+            _val = T.init;
+        }
+        return result;
+    }
+
+    // implicit conversion
+    @property ref inout(T) get() inout
+    {
+        return _val;
+    }
+
+    alias get this;
 
 private:
-    RefT _p;
+    T _val;
 }
 
-/+ doesn't work yet
 unittest
 {
-    writeln("Unique class");
-    class Bar
+    static class Foo
     {
-        ~this() { writefln("    Bar destructor"); }
+        ~this() { ++_dtor; }
+        static size_t _dtor;
+    }
+
+    Unique!Foo foobar()
+    {
+        auto foo = Unique!Foo();
+        return foo;
+    }
+
+    foobar();
+    Unique!Foo foo;
+    assert(foo is Foo.init);
+    foo = new Foo;
+    assert(foo !is Foo.init);
+    Unique!Foo foo2 = foo.release;
+    assert(foo is Foo.init);
+    assert(Foo._dtor == 0);
+    foo2 = Foo.init;
+    assert(Foo._dtor == 1);
+
+    foo = new Foo;
+    foo2 = move(foo);
+    assert(foo is null && foo2 !is null);
+    assert(Foo._dtor == 1);
+    foo2 = null;
+    assert(Foo._dtor == 2);
+}
+
+unittest
+{
+    static class Bar
+    {
+        ~this() {}
         int val() const { return 4; }
     }
     alias Unique!(Bar) UBar;
     UBar g(UBar u)
     {
-        return u;
+        return move(u);
     }
+
     auto ub = UBar(new Bar);
-    assert(!ub.isEmpty);
     assert(ub.val == 4);
-    // should not compile
-    // auto ub3 = g(ub);
-    writeln("Calling g");
-    auto ub2 = g(ub.release);
-    assert(ub.isEmpty);
-    assert(!ub2.isEmpty);
+
+    static assert(!__traits(compiles, g(ub)));
+    static assert(__traits(compiles, g(move(ub))));
+    auto ub2 = g(move(ub));
+    assert(ub is null);
+    assert(ub2.val == 4);
 }
 
 unittest
 {
-    writeln("Unique struct");
-    struct Foo
+    static struct Foo
     {
-        ~this() { writefln("    Bar destructor"); }
+        ~this() { }
         int val() const { return 3; }
     }
     alias Unique!(Foo) UFoo;
 
     UFoo f(UFoo u)
     {
-        writeln("inside f");
-        return u;
+        return move(u);
     }
 
-    auto uf = UFoo(new Foo);
-    assert(!uf.isEmpty);
+    auto uf = UFoo();
     assert(uf.val == 3);
     // should not compile
-    // auto uf3 = f(uf);
-    writeln("Unique struct: calling f");
-    auto uf2 = f(uf.release);
-    assert(uf.isEmpty);
-    assert(!uf2.isEmpty);
+    static assert(!__traits(compiles, f(uf)));
+    auto uf2 = f(move(uf));
 }
-+/
 
 
 /**
