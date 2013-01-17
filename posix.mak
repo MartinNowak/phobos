@@ -47,11 +47,9 @@ ifeq (,$(OS))
 endif
 
 # For now, 32 bit is the default model
-ifeq (,$(MODEL))
-	MODEL:=32
-endif
-
-override PIC:=$(if $(PIC),-fPIC,)
+MODEL:=32
+override SHARED:=$(if $(SHARED),1,)
+override PIC:=$(if $(or $(PIC), $(SHARED)),-fPIC,)
 
 # Configurable stuff that's rarely edited
 DRUNTIME_PATH = ../druntime
@@ -74,13 +72,6 @@ BUILD =
 
 # Fetch the makefile name, will use it in recursive calls
 MAKEFILE:=$(lastword $(MAKEFILE_LIST))
-
-# Set DRUNTIME name and full path
-ifeq (,$(findstring win,$(OS)))
-	DRUNTIME = $(DRUNTIME_PATH)/lib/libdruntime-$(OS)$(MODEL).a
-else
-	DRUNTIME = $(DRUNTIME_PATH)/lib/druntime.lib
-endif
 
 # Set CC and DMD
 ifeq ($(OS),win32wine)
@@ -121,16 +112,23 @@ else
 	DFLAGS += -O -release
 endif
 
-# Set DOTOBJ and DOTEXE
+# Set platform extensions
 ifeq (,$(findstring win,$(OS)))
 	DOTOBJ:=.o
 	DOTEXE:=
+	DOTDLL:=.so
+	DOTLIB:=.a
 	PATHSEP:=/
 else
 	DOTOBJ:=.obj
 	DOTEXE:=.exe
+	DOTDLL:=.dll
+	DOTLIB:=.lib
 	PATHSEP:=$(shell echo "\\")
 endif
+
+LIB_PRE:=$(if $(findstring win,$(OS)),,lib)
+LIB_EXT:=$(if $(SHARED),$(DOTDLL),$(DOTLIB))
 
 # Set LINKOPTS
 ifeq (,$(findstring win,$(OS)))
@@ -146,12 +144,19 @@ endif
 # Set DDOC, the documentation generator
 DDOC=$(DMD)
 
-# Set LIB, the ultimate target
-ifeq (,$(findstring win,$(OS)))
-	LIB = $(ROOT)/libphobos2.a
+# Set DRUNTIME name and full path
+DRUNTIME_BASE:=druntime-$(OS)$(MODEL)
+DRUNTIME:=$(DRUNTIME_PATH)/lib/$(LIB_PRE)$(DRUNTIME_BASE)$(LIB_EXT)
+
+ifeq ($(SHARED),1)
+	LIB_FLAGS:=-shared -L-L$(DRUNTIME_PATH)/lib -defaultlib=$(DRUNTIME_BASE) -debuglib=$(DRUNTIME_BASE)
 else
-	LIB = $(ROOT)/phobos.lib
+	LIB_FLAGS:=-lib $(DRUNTIME)
 endif
+
+# Set LIB, the ultimate target
+LIB_BASE:=phobos2
+LIB:=$(ROOT)/$(LIB_PRE)$(LIB_BASE)$(LIB_EXT)
 
 ################################################################################
 MAIN = $(ROOT)/emptymain.d
@@ -232,8 +237,8 @@ release :
 debug :
 	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=debug
 unittest :
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=debug unittest
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=release unittest
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=debug unittest
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=release unittest
 else
 # This branch is normally taken in recursive builds. All we need to do
 # is set the default build to $(BUILD) (which is either debug or
@@ -249,7 +254,7 @@ $(ROOT)/%$(DOTOBJ) : %.c
 	$(CC) -c $(CFLAGS) $< -o$@
 
 $(LIB) : $(OBJS) $(ALL_D_FILES) $(DRUNTIME)
-	$(DMD) $(DFLAGS) -lib -of$@ $(DRUNTIME) $(D_FILES) $(OBJS)
+	$(DMD) $(DFLAGS) $(LIB_FLAGS) -of$@ $(D_FILES) $(OBJS)
 
 ifeq (osx,$(OS))
 # Build fat library that combines the 32 bit and the 64 bit libraries
@@ -257,19 +262,45 @@ libphobos2.a : generated/osx/release/32/libphobos2.a generated/osx/release/64/li
 	lipo generated/osx/release/32/libphobos2.a generated/osx/release/64/libphobos2.a -create -output generated/osx/release/libphobos2.a
 endif
 
+################### Unit Tests #################################
+
+
 $(addprefix $(ROOT)/unittest/,$(DISABLED_TESTS)) :
 	@echo Testing $@ - disabled
+
+ifeq ($(SHARED),1)
+
+# macro that returns the module name given the src path
+moduleName=$(subst $(PATHSEP),.,$(1))
+UT_LIB:=$(ROOT)/unittest/$(LIB_PRE)$(LIB_BASE)-ut$(DOTDLL)
+
+$(UT_LIB): D_FILES+=$(DRUNTIME_PATH)/src/dso_unittest_handler.d
+$(UT_LIB): $(OBJS) $(ALL_D_FILES) $(DRUNTIME) posix.mak
+	$(DMD) $(DFLAGS) -unittest $(LIB_FLAGS) -of$@ $(D_FILES) $(OBJS)
+
+$(ROOT)/unittest/test_runner: $(UT_LIB) $(ROOT)/emptymain.d
+	@$(DMD) -of$@ $(DFLAGS) $(ROOT)/emptymain.d -L-L$(ROOT)/unittest -defaultlib=$(LIB_BASE)-ut -debuglib=$(LIB_BASE)-ut \
+		 -L--rpath=$(ROOT)/unittest -L--rpath=$(DRUNTIME_PATH)/lib
+
+$(ROOT)/unittest/%$(DOTEXE): $(ROOT)/unittest/test_runner
+	@$(RUN) $< $(call moduleName,$*)
+	@mkdir -p $(dir $@)
+	@touch $@
+
+else # SHARED
 
 $(ROOT)/unittest/%$(DOTEXE) : %.d $(LIB) $(ROOT)/emptymain.d
 	@echo Testing $@
 	@$(DMD) $(DFLAGS) -unittest $(LINKOPTS) $(subst /,$(PATHSEP),"-of$@") \
-	 	$(ROOT)/emptymain.d $<
+		$(ROOT)/emptymain.d $<
 # make the file very old so it builds and runs again if it fails
 	@touch -t 197001230123 $@
 # run unittest in its own directory
 	@$(RUN) $@
 # succeeded, render the file new again
 	@touch $@
+
+endif # SHARED
 
 # Disable implicit rule
 %$(DOTEXE) : %$(DOTOBJ)
@@ -291,7 +322,7 @@ install : release
 	sudo cp $(LIB) /usr/lib/
 
 $(DRUNTIME) :
-	$(MAKE) -C $(DRUNTIME_PATH) -f posix.mak MODEL=$(MODEL)
+	$(MAKE) -C $(DRUNTIME_PATH) -f posix.mak MODEL=$(MODEL) SHARED=$(SHARED)
 
 ###########################################################
 # html documentation
