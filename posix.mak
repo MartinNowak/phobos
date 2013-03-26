@@ -48,12 +48,36 @@ ifeq (,$(OS))
 	$(error Unrecognized or unsupported OS for uname: $(uname_S))
 endif
 
-# For now, 32 bit is the default model
-ifeq (,$(MODEL))
-	MODEL:=32
+# Set platform extensions
+ifneq (,$(findstring win,$(OS)))
+	DOTOBJ:=.obj
+	DOTEXE:=.exe
+	PATHSEP:=$(shell echo "\\")
+	LIB_PREFIX:=
+	DOTLIB:=.lib
+	DOTDLL:=.dll
+else
+	DOTOBJ:=.o
+	DOTEXE:=
+	PATHSEP:=/
+	LIB_PREFIX:=lib
+	DOTLIB:=.a
+	ifeq (osx,$(OS))
+		DOTDLL:=.dylib
+	else
+		DOTDLL:=.so
+	endif
 endif
 
-override PIC:=$(if $(PIC),-fPIC,)
+# For now, 32 bit is the default model
+MODEL:=32
+# default to SHARED on some platforms
+ifeq (linux,$(OS))
+	ifeq (64,$(MODEL))
+		SHARED:=1
+	endif
+endif
+override PIC:=$(if $(or $(PIC), $(SHARED)),-fPIC,)
 
 # Configurable stuff that's rarely edited
 DRUNTIME_PATH = ../druntime
@@ -79,10 +103,12 @@ MAKEFILE:=$(lastword $(MAKEFILE_LIST))
 
 # Set DRUNTIME name and full path
 ifeq (,$(findstring win,$(OS)))
-	DRUNTIME = $(DRUNTIME_PATH)/lib/libdruntime-$(OS)$(MODEL).a
+	DRUNTIME_BASE:=druntime-$(OS)$(MODEL)
 else
-	DRUNTIME = $(DRUNTIME_PATH)/lib/druntime.lib
+	DRUNTIME_BASE:=druntime
 endif
+DRUNTIME:=$(DRUNTIME_PATH)/lib/$(LIB_PREFIX)$(DRUNTIME_BASE)$(DOTLIB)
+DRUNTIMESO:=$(DRUNTIME_PATH)/lib/$(LIB_PREFIX)$(DRUNTIME_BASE)$(DOTDLL)
 
 # Set CC and DMD
 ifeq ($(OS),win32wine)
@@ -123,17 +149,6 @@ else
 	DFLAGS += -O -release
 endif
 
-# Set DOTOBJ and DOTEXE
-ifeq (,$(findstring win,$(OS)))
-	DOTOBJ:=.o
-	DOTEXE:=
-	PATHSEP:=/
-else
-	DOTOBJ:=.obj
-	DOTEXE:=.exe
-	PATHSEP:=$(shell echo "\\")
-endif
-
 # Set LINKOPTS
 ifeq (,$(findstring win,$(OS)))
     ifeq (freebsd,$(OS))
@@ -149,11 +164,8 @@ endif
 DDOC=$(DMD)
 
 # Set LIB, the ultimate target
-ifeq (,$(findstring win,$(OS)))
-	LIB = $(ROOT)/libphobos2.a
-else
-	LIB = $(ROOT)/phobos.lib
-endif
+PHOBOS_BASE:=phobos2
+LIB:=$(ROOT)/$(LIB_PREFIX)$(PHOBOS_BASE)$(DOTLIB)
 
 ################################################################################
 MAIN = $(ROOT)/emptymain.d
@@ -230,12 +242,12 @@ ifeq ($(BUILD),)
 # self-invocations. So the targets in this branch are accessible to
 # end users.
 release :
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=release
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=release
 debug :
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=debug
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=debug
 unittest :
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=debug unittest
-	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) BUILD=release unittest
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=debug unittest
+	$(MAKE) --no-print-directory -f $(MAKEFILE) OS=$(OS) MODEL=$(MODEL) SHARED=$(SHARED) BUILD=release unittest
 else
 # This branch is normally taken in recursive builds. All we need to do
 # is set the default build to $(BUILD) (which is either debug or
@@ -262,14 +274,35 @@ endif
 $(addprefix $(ROOT)/unittest/,$(DISABLED_TESTS)) :
 	@echo Testing $@ - disabled
 
-$(ROOT)/unittest/%$(DOTEXE) : %.d $(LIB) $(ROOT)/emptymain.d
-	@echo Testing $@
-	$(QUIET)$(DMD) $(DFLAGS) -unittest $(LINKOPTS) $(subst /,$(PATHSEP),"-of$@") \
-	 	$(ROOT)/emptymain.d $<
+#######
+ifeq (,$(SHARED))
+
+$(ROOT)/unittest/test_runner: $(DRUNTIME_PATH)/src/test_runner.d $(OBJS) $(ALL_D_FILES) $(DRUNTIME)
+	$(DMD) $(DFLAGS) -unittest $(LINKOPTS) -of$@ $< $(D_FILES) $(OBJS) $(DRUNTIME) -debuglib= -defaultlib=
+
+else
+
+UT_PHOBOS:=$(ROOT)/unittest/$(LIB_PREFIX)$(PHOBOS_BASE)-ut$(DOTDLL)
+LINK_DRUNTIME:=-L-L$(DRUNTIME_PATH)/lib -L-rpath=$(DRUNTIME_PATH)/lib -L-l$(DRUNTIME_BASE) -debuglib= -defaultlib=
+
+$(UT_PHOBOS): $(OBJS) $(ALL_D_FILES) $(DRUNTIMESO)
+	$(DMD) $(DFLAGS) -shared -unittest -of$@ $(D_FILES) $(OBJS) $(LINK_DRUNTIME)
+
+$(ROOT)/unittest/test_runner: $(DRUNTIME_PATH)/src/test_runner.d $(UT_PHOBOS)
+	$(DMD) $(DFLAGS) $(LINKOPTS) -of$@ $< -L-L$(ROOT)/unittest -L-rpath=$(ROOT)/unittest -L-l$(PHOBOS_BASE)-ut $(LINK_DRUNTIME)
+
+endif
+#######
+
+# macro that returns the module name given the src path
+moduleName=$(subst /,.,$(1))
+
+$(ROOT)/unittest/% : $(ROOT)/unittest/test_runner
+	@mkdir -p $(dir $@)
 # make the file very old so it builds and runs again if it fails
 	@touch -t 197001230123 $@
 # run unittest in its own directory
-	$(QUIET)$(RUN) $@
+	$(QUIET)$(RUN) $(ROOT)/unittest/test_runner $(call moduleName,$*)
 # succeeded, render the file new again
 	@touch $@
 
@@ -293,7 +326,10 @@ install : release
 	sudo cp $(LIB) /usr/lib/
 
 $(DRUNTIME) :
-	$(MAKE) -C $(DRUNTIME_PATH) -f posix.mak MODEL=$(MODEL)
+	$(MAKE) -C $(DRUNTIME_PATH) -f posix.mak MODEL=$(MODEL) SHARED=$(SHARED)
+
+$(DRUNTIMESO) :
+	$(MAKE) -C $(DRUNTIME_PATH) -f posix.mak MODEL=$(MODEL) SHARED=$(SHARED) dll
 
 ###########################################################
 # html documentation
