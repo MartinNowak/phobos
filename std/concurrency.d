@@ -2382,3 +2382,75 @@ version( unittest )
         scheduler = null;
     }
 }
+
+//////////////////////////////////////////////////////////////////////////////
+// callOnce
+//////////////////////////////////////////////////////////////////////////////
+
+private template callOnceLock()
+{
+    __gshared Mutex lock;
+
+    shared static this()
+    {
+        lock = new Mutex;
+    }
+
+    @property Mutex callOnceLock()
+    {
+        return lock;
+    }
+}
+
+/**
+ * Executes the given $(D_PARAM callable) exactly once, even when invoked by
+ * multiple threads simultaneously.  The implementation guarantees that all
+ * calling threads block until $(D_PARAM callable) returns and that any
+ * side-effects of $(D_PARAM callable) are globally visible afterwards.
+ *
+ * Note: As all instances of callOnce share the same recursive mutex,
+ * $(D_PARAM callable) should not wait for another thread that might
+ * also invoke callOnce or a dead-lock can happen.
+ */
+void callOnce(alias callable)()
+{
+    import core.atomic;
+
+    static shared bool flag;
+    if (!atomicLoad!(MemoryOrder.acq)(flag))
+    {
+        synchronized (callOnceLock)
+        {
+            if (!atomicLoad!(MemoryOrder.acq)(flag))
+            {
+                callable();
+                atomicStore!(MemoryOrder.rel)(flag, true);
+            }
+        }
+    }
+}
+
+/// A typical use-case is to perform lazy but thread-safe initialization.
+unittest
+{
+    static class MySingleton
+    {
+        static MySingleton instance()
+        {
+            static __gshared MySingleton inst;
+            callOnce!({ inst = new MySingleton; })();
+            return inst;
+        }
+
+    private:
+        this() { val = ++cnt; }
+        size_t val;
+        static __gshared size_t cnt;
+    }
+
+    foreach (_; 0 .. 10)
+        spawn({ownerTid.send(MySingleton.instance.val);});
+    foreach (_; 0 .. 10)
+        assert(receiveOnly!size_t == MySingleton.instance.val);
+    assert(MySingleton.cnt == 1);
+}
