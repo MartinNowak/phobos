@@ -1796,7 +1796,7 @@ private
         /*
          *
          */
-        final @property bool isClosed() const
+        final @property bool isClosed()
         {
             synchronized( m_lock )
             {
