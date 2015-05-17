@@ -289,8 +289,7 @@ unittest
     assert(newOwner);
 
     // Use `isNull` when a more explicit check is desirable
-    bool isValid = !newOwner.isNull;
-    assert(isValid);
+    assert(!newOwner.isNull);
 }
 
 unittest
