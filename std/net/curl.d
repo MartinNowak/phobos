@@ -3748,11 +3748,10 @@ struct Curl
                                (pauseReceiving ? CurlPause.recv_cont : CurlPause.recv)));
     }
 
-    deprecated("Use pause(PauseSending, PauseReceiving) with flags instead of booleans.")
+    /// ditto
     void pause(bool pauseSending, bool pauseReceiving)
     {
-        pause(cast(PauseSending)pauseSending,
-              cast(PauseReceiving)pauseReceiving);
+        pause(PauseSending(pauseSending), PauseReceiving(pauseReceiving));
     }
 
     /**

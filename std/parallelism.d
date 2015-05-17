@@ -3110,9 +3110,10 @@ public:
     rudimentary scheduler for tasks which communicate by means other than
     return values.
 
-    Warning:  Calling this function with $(D blocking = true) from a worker
-              thread that is a member of the same $(D TaskPool) that
+    Warning:  Calling this function with $(D blocking = Blocking.yes) from a
+              worker thread that is a member of the same $(D TaskPool) that
               $(D finish) is being called on will result in a deadlock.
+
      */
     void finish(Blocking blocking = Blocking.no) @trusted
     {
@@ -3144,10 +3145,10 @@ public:
         }
     }
 
-    deprecated("Please use Blocking.yes or Blocking.no instead of a boolean.")
+    /// ditto
     void finish(bool blocking = false) @trusted
     {
-        finish(cast(Blocking)blocking);
+        finish(Blocking(blocking));
     }
 
     /// Returns the number of worker threads in the pool.

@@ -2973,11 +2973,10 @@ auto dirEntries(string path, SpanMode mode,
     return DirIterator(path, mode, followSymlink);
 }
 
-deprecated("Please use dirEntries(string, SpanMode, FollowSymlink) "
-           "with FollowSymlink.yes or FollowSymlink.no instead.")
+/// ditto
 auto dirEntries(string path, SpanMode mode, bool followSymlink = true)
 {
-    return dirEntries(path, mode, cast(FollowSymlink)followSymlink);
+    return DirIterator(path, mode, FollowSymlink(followSymlink));
 }
 
 /// Duplicate functionality of D1's $(D std.file.listdir()):
