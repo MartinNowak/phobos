@@ -183,7 +183,7 @@ struct Unique(T)
     /// $(D true) if the $(D Unique) currently owns an underlying $(D T),
     /// and false otherwise.
     /// See_Also: $(LREF isNull) for an explicit way to check validity
-    bool opCast(T : bool)() const { return _p !is null; }
+    bool opCast(T : bool)() const @safe { return _p !is null; }
 
     /**
     $(D false) if the $(D Unique) currently owns an underlying $(D T),
