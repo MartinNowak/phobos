@@ -245,6 +245,26 @@ Unique!T unique(T, A...)(auto ref A args)
     return u;
 }
 
+unittest
+{
+    // Unlike the current Nullable, assigning to null doesn't work,
+    // making confusion between the effects of "= null" and "nullify" moot.
+    auto uo = unique!Object();
+    // uo = null; // Error: forwards to get(), which returns an rvalue for classes
+    assert(uo);
+    uo.nullify();
+    assert(!uo);
+
+    auto up = unique!(int*);
+    assert(up);
+    int actual = 42;
+    up.get() = &actual;
+    // up = null; // Also donesn't work (no opAssign for typeof null)
+    assert(up);
+    up.nullify();
+    assert(!up);
+}
+
 /// Use unique to construct _unique resources:
 unittest
 {
