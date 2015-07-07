@@ -47,8 +47,6 @@ import std.traits;
 // FIXME
 import std.typetuple; // : TypeTuple, allSatisfy;
 
-debug(Unique) import std.stdio;
-
 /**
 Encapsulates unique ownership of a resource.
 
@@ -87,7 +85,6 @@ struct Unique(T)
     this(U)(Unique!U u)
         if (is(u.RefT : RefT))
     {
-        debug(Unique) writeln("Unique constructor converting from ", U.stringof);
         _p = u._p;
         u._p = null;
     }
@@ -96,7 +93,6 @@ struct Unique(T)
     void opAssign(U)(Unique!U u)
         if (is(u.RefT : RefT))
     {
-        debug(Unique) writeln("Unique opAssign converting from ", U.stringof);
         // first delete any resource we own
         destroy(this);
         _p = u._p;
@@ -119,7 +115,6 @@ struct Unique(T)
     {
         import core.stdc.stdlib : free;
 
-        debug(Unique) writeln("Unique destructor of ", _p is null? null : _p);
         if (_p !is null)
         {
             static if (is(T == class) || is(T == interface))
@@ -144,10 +139,8 @@ struct Unique(T)
     {
         import std.algorithm : move;
 
-        debug(Unique) writeln("Release");
         Unique u = move(this);
         assert(_p is null);
-        debug(Unique) writeln("return from Release");
         return u;
     }
 
@@ -215,7 +208,6 @@ Unique!T unique(T, A...)(auto ref A args)
     import std.conv : emplace;
     import core.exception : onOutOfMemoryError;
 
-    debug(Unique) writeln("unique() for ", T.stringof);
     Unique!T u;
 
     // TODO: May need to fix alignment?
@@ -399,10 +391,9 @@ unittest
 
 unittest
 {
-    debug(Unique) writeln("Unique class");
     static class Bar
     {
-        ~this() { debug(Unique) writeln("    Bar destructor"); }
+        ~this() { }
         int val() const { return 4; }
     }
 
@@ -411,7 +402,6 @@ unittest
     UBar g(UBar u)
     {
         import std.algorithm : move;
-        debug(Unique) writeln("inside g");
         return move(u);
     }
 
@@ -420,9 +410,7 @@ unittest
     assert(ub.val == 4);
 
     import std.algorithm : move;
-    debug(Unique) writeln("Calling g");
     auto ub2 = g(move(ub));
-    debug(Unique) writeln("Returned from g");
     assert(!ub);
     assert(ub2);
 }
@@ -432,26 +420,22 @@ unittest
     // Same as above, but for a struct
     import std.algorithm : move;
 
-    debug(Unique) writeln("Unique struct");
     static struct Foo
     {
-        ~this() { debug(Unique) writeln("    Foo destructor"); }
+        ~this() { }
         int val() const { return 3; }
     }
     alias UFoo = Unique!(Foo);
 
     UFoo f(UFoo u)
     {
-        debug(Unique) writeln("inside f");
         return move(u);
     }
 
     auto uf = unique!Foo();
     assert(uf);
     assert(uf.val == 3);
-    debug(Unique) writeln("Unique struct: calling f");
     auto uf2 = f(move(uf));
-    debug(Unique) writeln("Unique struct: returned from f");
     assert(!uf);
     assert(uf2);
 }
@@ -6974,4 +6958,3 @@ unittest
         int, float, RefFun1, RefFun2,
     );
 }
-
