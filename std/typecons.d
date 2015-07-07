@@ -113,24 +113,24 @@ struct Unique(T)
     */
     void nullify()
     {
+        if (_p is null)
+            return;
+
         import core.stdc.stdlib : free;
 
-        if (_p !is null)
+        static if (is(T == class) || is(T == interface))
+            destroy(_p);
+        else
+            destroy(*_p);
+
+        static if (hasIndirections!T)
         {
-            static if (is(T == class) || is(T == interface))
-                destroy(_p);
-            else
-                destroy(*_p);
-
-            static if (hasIndirections!T)
-            {
-                import core.memory : GC;
-                GC.removeRange(cast(void*)_p);
-            }
-
-            free(cast(void*)_p);
-            _p = null;
+            import core.memory : GC;
+            GC.removeRange(cast(void*)_p);
         }
+
+        free(cast(void*)_p);
+        _p = null;
     }
 
     /// Transfer ownership to a $(D Unique) rvalue.
