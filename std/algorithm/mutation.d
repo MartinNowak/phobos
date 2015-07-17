@@ -824,19 +824,12 @@ unittest
     }
 }
 
-// move
-/**
-Moves $(D source) into $(D target) via a destructive copy.
+private void _trustedMove(T)(ref T source, ref T target) @trusted
+{
+    _move!T(source, target);
+}
 
-Params:
-    source = Data to copy. If a destructor or postblit is defined, it is reset
-        to its $(D .init) value after it is moved into target.  Note that data
-        with internal pointers that point to itself cannot be moved, and will
-        trigger an assertion failure.
-    target = Where to copy into. The destructor, if any, is invoked before the
-        copy is performed.
-*/
-void move(T)(ref T source, ref T target)
+private void _move(T)(ref T source, ref T target) @system
 {
     import core.stdc.string : memcpy, memset;
     import std.traits : hasAliasing, hasElaborateAssign,
@@ -884,6 +877,27 @@ void move(T)(ref T source, ref T target)
         // assignment works great
         target = source;
     }
+}
+
+// move
+/**
+Moves $(D source) into $(D target) via a destructive copy.
+
+Params:
+    source = Data to copy. If a destructor or postblit is defined, it is reset
+        to its $(D .init) value after it is moved into target.  Note that data
+        with internal pointers that point to itself cannot be moved, and will
+        trigger an assertion failure.
+    target = Where to copy into. The destructor, if any, is invoked before the
+        copy is performed.
+*/
+void move(T)(ref T source, ref T target)
+{
+    // check for @safe destructor
+    static if (__traits(compiles, (T t) @safe {}))
+        _trustedMove(source, target);
+    else
+        _move(source, target);
 }
 
 ///
@@ -993,7 +1007,7 @@ unittest
 }
 
 /// Ditto
-T move(T)(ref T source)
+T move(T)(ref T source) @trusted
 {
     import core.stdc.string : memcpy, memset;
     import std.traits : hasAliasing, hasElaborateAssign,
@@ -1160,6 +1174,20 @@ unittest// Issue 8057
     Array!int.Payload x = void;
     static assert(__traits(compiles, move(x)    ));
     static assert(__traits(compiles, move(x, x) ));
+}
+
+unittest
+{
+    static struct Safe { ~this() @safe {} }
+    Safe sa, sb;
+    () @safe {
+        move(sa);
+        move(sa, sb);
+    }();
+    static struct Unsafe { ~this() @system {} }
+    Unsafe ua, ub;
+    static assert(!__traits(compiles, () @safe { move(ua); }));
+    static assert(!__traits(compiles, () @safe { move(ua, ub); }));
 }
 
 // moveAll
