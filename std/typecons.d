@@ -47,6 +47,79 @@ import std.traits;
 // FIXME
 import std.typetuple; // : TypeTuple, allSatisfy;
 
+// recursively destroy a class instance
+private void _destroy(T)(T obj) @trusted if (is(T == class) && _hasDtor!T)
+{
+    // cast attributes from statically typed dtor onto dynamic dtor
+    alias FT = SetFunctionAttributes!(void function(Object), "D", functionAttributes!(T.init.__xdtor));
+    auto ci = obj.classinfo;
+    do
+    {
+        if (auto fp = cast(FT)ci.destructor)
+            fp(obj);
+    } while ((ci = ci.base) !is null);
+    // leak monitor b/c destruction would be impure, will be collected by the GC
+}
+
+private void _destroy(T)(T* obj) if (is(T == struct) && _hasDtor!T)
+{
+    obj.__xdtor();
+}
+
+private template _hasDtor(T) if (is(T == class))
+{
+    static if (__traits(hasMember, T, "__xdtor"))
+        // make sure that the dtor doesn't belong to an alias this'ed field
+        enum _hasDtor = __traits(getAliasThis, T).length == 0 ||
+            staticIndexOf!(__traits(parent, T.init.__xdtor), TypeTuple!(T, BaseClassesTuple!T)) != -1;
+    else
+        enum _hasDtor = false;
+}
+
+private template _hasDtor(T) if (is(T == struct))
+{
+    static if (__traits(hasMember, T, "__xdtor"))
+        // make sure that the dtor doesn't belong to an alias this'ed field
+        enum _hasDtor = __traits(isSame, __traits(parent, T.init.__xdtor), T);
+    else
+        enum _hasDtor = false;
+}
+
+private template _hasDtor(T) if (!is(T == class) && !is(T == struct))
+{
+    enum _hasDtor = false;
+}
+
+unittest
+{
+    static class A { ~this() {} }
+    static class B : A { }
+    static class C { }
+    static class D { A a; alias a this; }
+    static class E : A { int a; alias a this; }
+    static class F : A { ~this() {} int a; alias a this; }
+    static assert(_hasDtor!A);
+    static assert(_hasDtor!B);
+    static assert(!_hasDtor!C);
+    static assert(!_hasDtor!D);
+    static assert(_hasDtor!E);
+    static assert(_hasDtor!F);
+}
+
+unittest
+{
+    static struct A { ~this() {} }
+    static struct B { A base; }
+    static struct C { }
+    static struct D { A* ptr; alias ptr this; }
+    static struct E { A base; int a; alias a this; }
+    static assert(_hasDtor!A);
+    static assert(_hasDtor!B);
+    static assert(!_hasDtor!C);
+    static assert(!_hasDtor!D);
+    static assert(_hasDtor!E);
+}
+
 /**
 Encapsulates unique ownership of a resource.
 
@@ -85,6 +158,7 @@ struct Unique(T)
     this(U)(Unique!U u)
         if (is(u.RefT : RefT))
     {
+        mixin checkCompatibleDtors!U;
         _p = u._p;
         u._p = null;
     }
@@ -93,8 +167,9 @@ struct Unique(T)
     void opAssign(U)(Unique!U u)
         if (is(u.RefT : RefT))
     {
+        mixin checkCompatibleDtors!U;
         // first delete any resource we own
-        destroy(this);
+        nullify();
         _p = u._p;
         u._p = null;
     }
@@ -111,37 +186,38 @@ struct Unique(T)
     Behaves the same as $(D destroy), but is provided along with $(D isNull)
     to behave similarly to $(D Nullable)
     */
-    void nullify()
+    void nullify() @trusted // TODO: infer @trusted from dtor
     {
         if (_p is null)
             return;
 
         import core.stdc.stdlib : free;
 
-        static if (is(T == class) || is(T == interface))
-            destroy(_p);
+        static if (is(T == class))
+        {
+            auto p = _p;
+            static if (_hasDtor!T) _destroy(p);
+            else assert(!p.classinfo.destructor);
+        }
+        else static if (is(T == interface))
+        {
+            auto p = cast(Object)_p; // dynamic cast to start of object
+            destroy(p); // dynamic dtor => unsafe, impure, throw, gc
+        }
         else
-            destroy(*_p);
+        {
+            auto p = _p;
+            destroy(*p);
+        }
 
         static if (hasIndirections!T)
         {
             import core.memory : GC;
-            GC.removeRange(cast(void*)_p);
+            GC.removeRange(cast(void*)p);
         }
 
-        free(cast(void*)_p);
+        free(cast(void*)p);
         _p = null;
-    }
-
-    /// Transfer ownership to a $(D Unique) rvalue.
-    deprecated("Please use std.algorithm.move to transfer ownership.")
-    Unique release()
-    {
-        import std.algorithm : move;
-
-        Unique u = move(this);
-        assert(_p is null);
-        return u;
     }
 
     /**
@@ -181,8 +257,6 @@ struct Unique(T)
     /**
     $(D false) if the $(D Unique) currently owns an underlying $(D T),
     and true otherwise.
-
-    This is just a more explicit way of checking compared to a boolean cast.
     */
     @property bool isNull() const
     {
@@ -196,6 +270,15 @@ struct Unique(T)
     @disable this(this);
 
 private:
+
+    private mixin template checkCompatibleDtors(Derived)
+    {
+        // compiler will enforce covariance of derived dtors; interfaces can't have a dtor;
+        // disallow the case where only the derived class has a dtor
+        static assert(_hasDtor!RefT == _hasDtor!Derived,
+                      "Can't convert Unique!("~Derived.stringof~") with destructor "~
+                      "to Unique!("~RefT.stringof~") without destructor.");
+    }
     RefT _p;
 }
 
@@ -203,16 +286,101 @@ private:
 Unique!T unique(T, A...)(auto ref A args)
     if (__traits(compiles, new T(args)))
 {
+    static if (__traits(compiles, () @safe { new T(A.init); }))
+        return _trustedUnique!(T, A)(args);
+    else
+        return _unique!(T, A)(args);
+}
+
+/// Use unique to construct _unique resources:
+nothrow @safe @nogc unittest
+{
+    static struct S
+    {
+        int i;
+        this(int i) pure nothrow @safe @nogc { this.i = i; }
+    }
+
+    auto u = unique!S(42);
+    assert(u);
+    assert(u.i == 42);
+}
+
+/// `Unique` also supports classes
+nothrow /*@safe*/ @nogc unittest
+{
+    static class C
+    {
+        int i;
+        this(int i) pure nothrow @safe @nogc { this.i = i; }
+    }
+
+    auto u = unique!C(42);
+    assert(u);
+    // access to classes is currently unsafe
+    assert(u.i == 42);
+}
+
+/// $(D Unique!T) supports polymorphism
+unittest
+{
+    import std.algorithm : move;
+
+    static interface I {}
+    static class Base : I {}
+    static class Derived : Base {}
+
+    Unique!Derived d = unique!Derived();
+    Unique!Base b = move(d);
+    Unique!I i = move(b);
+}
+
+/// Use `isNull` or `cast(bool)` to check if a reference is valid
+unittest
+{
+    import std.algorithm.mutation : move;
+    Unique!Object u;
+    assert(!u); // uninitialized
+    u = unique!Object();
+    assert(u);
+    Unique!Object newOwner = move(u);
+    assert(!u); // invalidated by the move
+    assert(newOwner);
+
+    assert(!newOwner.isNull);
+}
+
+///
+unittest
+{
+    import std.algorithm.mutation : move;
+
+    Unique!int u;
+    assert(u.isNull);
+    u = unique!int(42);
+    assert(!u.isNull); // `u` refers to an initialized `int`
+
+    Unique!int u2 = move(u);
+    assert(u.isNull); // `u` was destroyed by the explicit move
+
+    // `u2` is the new owner of the `int`
+    assert(!u2.isNull);
+    assert(u2 == 42);
+}
+
+private Unique!T _trustedUnique(T, A...)(auto ref A args) @trusted
+{
+    return _unique!(T, A)(args);
+}
+
+private Unique!T _unique(T, A...)(auto ref A args)
+{
     import core.memory : GC;
     import core.stdc.stdlib : malloc;
     import std.conv : emplace;
     import core.exception : onOutOfMemoryError;
 
     Unique!T u;
-
-    // TODO: May need to fix alignment?
-    // Does emplace still need to mess with alignment if
-    // the memory is coming from malloc, or does malloc handle that?
 
     static if (is(T == class))
         immutable size_t allocSize = __traits(classInstanceSize, T);
@@ -235,73 +403,6 @@ Unique!T unique(T, A...)(auto ref A args)
         GC.addRange(rawMemory, allocSize);
 
     return u;
-}
-
-unittest
-{
-    // Unlike the current Nullable, assigning to null doesn't work,
-    // making confusion between the effects of "= null" and "nullify" moot.
-    auto uo = unique!Object();
-    // uo = null; // Error: forwards to get(), which returns an rvalue for classes
-    assert(uo);
-    uo.nullify();
-    assert(!uo);
-
-    auto up = unique!(int*);
-    assert(up);
-    int actual = 42;
-    up.get() = &actual;
-    // up = null; // Also donesn't work (no opAssign for typeof null)
-    assert(up);
-    up.nullify();
-    assert(!up);
-}
-
-/// Use unique to construct _unique resources:
-unittest
-{
-    struct S
-    {
-        int i;
-        this(int i) { this.i = i; }
-    }
-
-    auto u = unique!S(42);
-    assert(u);
-    assert(u.i == 42);
-}
-
-/// $(D Unique!T) supports the supertype conversions of $(D T):
-unittest
-{
-    import std.algorithm : move;
-
-    static interface I {}
-    static class Base : I {}
-    static class Derived : Base {}
-
-    Unique!Derived d = unique!Derived();
-    Unique!Base b = move(d);
-    // This currently causes a segfault. Attempting to free gives
-    // an "invalid pointer" error from free.
-    // Any idea what's going on here?
-    // Unique!I i = move(b);
-}
-
-/// Use $(D cast(bool)) to check if a reference is valid:
-unittest
-{
-    import std.algorithm.mutation : move;
-    Unique!Object u;
-    assert(!u); // uninitialized
-    u = unique!Object();
-    assert(u);
-    Unique!Object newOwner = move(u);
-    assert(!u); // invalidated by the move
-    assert(newOwner);
-
-    // Use `isNull` when a more explicit check is desirable
-    assert(!newOwner.isNull);
 }
 
 unittest
@@ -334,6 +435,26 @@ unittest
 }
 
 unittest
+{
+    // Unlike the current Nullable, assigning to null doesn't work,
+    // making confusion between the effects of "= null" and "nullify" moot.
+    auto uo = unique!Object();
+    // uo = null; // Error: forwards to get(), which returns an rvalue for classes
+    assert(uo);
+    uo.nullify();
+    assert(!uo);
+
+    auto up = unique!(int*);
+    assert(up);
+    int actual = 42;
+    up.get() = &actual;
+    // up = null; // Also donesn't work (no opAssign for typeof null)
+    assert(up);
+    up.nullify();
+    assert(!up);
+}
+
+@safe unittest
 {
     static struct S
     {
@@ -393,7 +514,7 @@ unittest
 {
     static class Bar
     {
-        ~this() { }
+        ~this() @safe @nogc pure nothrow { }
         int val() const { return 4; }
     }
 
@@ -415,14 +536,14 @@ unittest
     assert(ub2);
 }
 
-unittest
+@safe unittest
 {
     // Same as above, but for a struct
     import std.algorithm : move;
 
     static struct Foo
     {
-        ~this() { }
+        ~this() @safe @nogc pure nothrow { }
         int val() const { return 3; }
     }
     alias UFoo = Unique!(Foo);
@@ -440,22 +561,125 @@ unittest
     assert(uf2);
 }
 
-///
 unittest
 {
+    static class Bar {}
+    auto ub = unique!Bar;
+    // unsafe escaping with classes
+    static assert(!__traits(compiles, () @safe { ub.get(); }));
+}
+
+unittest
+{
+    static class Base {}
+    static class Derived : Base { ~this() {} }
+    static interface IBase {}
+    static class IDerived : IBase { ~this() {} }
+
+    static assert(!__traits(compiles, {Unique!Base u1 = unique!Derived();}));
+    static assert(!__traits(compiles, {Unique!IBase u2 = unique!IDerived();}));
+}
+
+unittest
+{
+    static uint dtor;
+    static class Base { ~this() { ++dtor; } }
+    static class Derived1 : Base { }
+    static class Derived2 : Base { ~this() { dtor += 17; } }
+
+    Unique!Base ub = unique!Base;
+    destroy(ub);
+    assert(dtor == 1);
+    ub = unique!Derived1;
+    destroy(ub);
+    assert(dtor == 2);
+    ub = unique!Derived2;
+    destroy(ub);
+    assert(dtor == 20);
+}
+
+/**
+ * Initializes a `Unique` with `val`. The template parameter
+ * `T` of `Unique` is inferred from `val`.
+ * This function can be used to move non-copyable values to the heap.
+ *
+ * Params:
+ *   val = The value to move onto the heap
+ * Returns:
+ *   An initialized $(D Unique) containing $(D val).
+ * See_Also:
+ *   $(WEB http://en.cppreference.com/w/cpp/memory/unique_ptr/make_unique, C++'s make_unique)
+ */
+///
+Unique!T unique(T)(T val) if (is(T == struct))
+{
+    import core.exception : onOutOfMemoryError;
+    import core.memory : GC;
+    import core.stdc.stdlib : malloc;
+    import core.stdc.string : memcpy, memset;
+
+
+    immutable size_t allocSize = T.sizeof;
+
+    void* p = malloc(allocSize);
+    if (!p)
+        onOutOfMemoryError();
+
+    // Can't use std.algorithm.move(source, _store._payload)
+    // here because it requires the target to be initialized.
+    // Might be worth to add this as `moveEmplace`
+
+    // Can avoid destructing result.
+    static if (hasElaborateAssign!T || !isAssignable!T)
+        memcpy(p, &val, T.sizeof);
+    else
+        *cast(T*)p = val;
+
+    // If the source defines a destructor or a postblit hook, we must obliterate the
+    // object in order to avoid double freeing and undue aliasing
+    static if (hasElaborateDestructor!T || hasElaborateCopyConstructor!T)
+    {
+        // If T is nested struct, keep original context pointer
+        static if (__traits(isNested, T))
+            enum sz = T.sizeof - (void*).sizeof;
+        else
+            enum sz = T.sizeof;
+
+        auto init = typeid(T).init();
+        if (init.ptr is null) // null ptr means initialize to 0s
+            memset(&val, 0, sz);
+        else
+            memcpy(&val, init.ptr, sz);
+    }
+
+    static if (hasIndirections!T)
+        GC.addRange(p, allocSize);
+
+    Unique!T u = void;
+    u._p = cast(T*)p;
+    return u;
+}
+
+unittest
+{
+    static struct File
+    {
+        string name;
+        @disable this(this); // not copyable
+        ~this() { name = null; }
+    }
+
+    auto file = File("name");
+    assert(file.name == "name");
+    // file cannot be copied and has unique ownership
+    static assert(!__traits(compiles, {auto file2 = file;}));
+
+    // move the file onto the heap using Unique
     import std.algorithm.mutation : move;
-
-    Unique!int u;
-    assert(u.isNull);
-    u = unique!int(42);
-    assert(!u.isNull); // `u` refers to an initialized `int`
-
-    Unique!int u2 = move(u);
-    assert(u.isNull); // `u` was destroyed by the explicit move
-
-    // `u2` is the new owner of the `int`
-    assert(!u2.isNull);
-    assert(u2 == 42);
+    auto u = unique(move(file));
+    assert(u.name == "name");
+    assert(file.name == null);
+    // file gets properly closed when last reference is dropped
 }
 
 /**
