@@ -135,9 +135,6 @@ in which case $(D Unique) behaves polymorphically too.
 Note: Nested classes and structs cannot be created at present time,
       as there is no way to transfer the closure's frame pointer
       into this function.
-
-Params:
-    args = Arguments to pass to $(D T)'s constructor.
 */
 struct Unique(T)
 {
@@ -681,6 +678,173 @@ unittest
     assert(file.name == null);
     // file gets properly closed when last reference is dropped
 }
+
+/**
+Encapsulates reference counted ownership of a resource.
+
+Like C++'s $(LINK2 http://en.cppreference.com/w/cpp/memory/unique_ptr, std::unique_ptr),
+a $(D Unique) maintains sole ownership of a given resource of type $(D T) until
+ownership is transferred or the $(D Unique) falls out of scope.
+Such a transfer can be explicit, using
+$(LINK2 http://dlang.org/phobos/std_algorithm_mutation.html#.move, $(D std.algorithm.move)),
+or implicit, when returning $(D Unique) from a function that created it.
+The resource can be a polymorphic class object,
+in which case $(D Unique) behaves polymorphically too.
+
+Note: Nested classes and structs cannot be created at present time,
+      as there is no way to transfer the closure's frame pointer
+      into this function.
+*/
+struct RC(T)
+{
+    /// Represents a reference to $(D T).
+    /// When $(D T) is a class or interface, $(D RefT) is an alias for $(D T).
+    /// Otherwise, $(D RefT) is $(D T*) (pointer to $(D T)).
+    static if (is(T == class) || is(T == interface))
+        alias RefT = T;
+    else
+        alias RefT = T*;
+
+    /**
+    Construct $(D RC) from a type that is convertible to `T`.
+
+    Typically used to transfer a $(D RC) rvalue of derived type to
+    a $(D RC) of base type.
+    */
+    this(U)(RC!U u)
+        if (is(u.RefT : RefT))
+    {
+        mixin checkCompatibleDtors!U;
+        _p = u._p;
+        incref();
+    }
+
+    /// Transfer ownership from a $(D Unique) of a type that is convertible to our type.
+    void opAssign(U)(Unique!U u)
+        if (is(u.RefT : RefT))
+    {
+        mixin checkCompatibleDtors!U;
+        // first delete any resource we own
+        decref();
+        _p = u._p;
+        incref();
+    }
+
+    /// Destroying a $(D Unique) frees the underlying $(D T).
+    ~this()
+    {
+        decref();
+    }
+
+    /*
+    Frees the underlying $(D T).
+
+    Behaves the same as $(D destroy), but is provided along with $(D isNull)
+    to behave similarly to $(D Nullable)
+    */
+    void nullify() @trusted // TODO: infer @trusted from dtor
+    {
+        if (_p is null || --_p.count)
+            return;
+
+        import core.stdc.stdlib : free;
+
+        static if (is(T == class))
+        {
+            auto p = _p;
+            static if (_hasDtor!T) _destroy(p);
+            else assert(!p.classinfo.destructor);
+        }
+        else static if (is(T == interface))
+        {
+            auto p = cast(Object)_p; // dynamic cast to start of object
+            destroy(p); // dynamic dtor => unsafe, impure, throw, gc
+        }
+        else
+        {
+            auto p = _p;
+            destroy(*p);
+        }
+
+        static if (hasIndirections!T)
+        {
+            import core.memory : GC;
+            GC.removeRange(cast(void*)p);
+        }
+
+        free(cast(void*)p);
+        _p = null;
+    }
+
+    /**
+    Returns a reference to the underlying $(D T) for use by non-owning code.
+
+    When $(D T) is a class or interface type and this $(D Unique) reference
+    is uninitialized or invalidated by an explicit move, get returns $(D null).
+    For all other types, get is illegal on an uninitialized or invalidated
+    reference.
+
+    The holder of a $(D Unique!T) is the $(I owner) of that $(D T).
+    For code that does not own the resource (and therefore does not affect
+    its life cycle), pass a plain old reference.
+
+    Note that getting a class reference is currently unsafe
+    as there is currently no way to stop it from escaping. (see DIP69)
+    */
+    inout(T) get()() inout @system
+        if (is(T == class) || is(T == interface))
+    {
+        return _p;
+    }
+
+    /// Ditto
+    ref inout(T) get()() inout return @safe
+        if (!is(T == class) && !is(T == interface))
+    {
+        assert(_p !is null, "Uninitialized or invalidated Unique reference cannot be dereferenced");
+        return *_p;
+    }
+
+    /// $(D true) if the $(D Unique) currently owns an underlying $(D T),
+    /// and false otherwise.
+    /// See_Also: $(LREF isNull) for an explicit way to check validity
+    bool opCast(T : bool)() const @safe { return _p !is null; }
+
+    /**
+    $(D false) if the $(D Unique) currently owns an underlying $(D T),
+    and true otherwise.
+    */
+    @property bool isNull() const
+    {
+        return _p is null;
+    }
+
+    /// $(D Unique!T) is a subtype of $(D T).
+    alias get this;
+
+    /// $(D Unique) references cannot be copied.
+    @disable this(this);
+
+private:
+
+    private mixin template checkCompatibleDtors(Derived)
+    {
+        // compiler will enforce covariance of derived dtors; interfaces can't have a dtor;
+        // disallow the case where only the derived class has a dtor
+        static assert(_hasDtor!RefT == _hasDtor!Derived,
+                      "Can't convert Unique!("~Derived.stringof~") with destructor "~
+                      "to Unique!("~RefT.stringof~") without destructor.");
+    }
+    static struct _Store
+    {
+        size_t count;
+        size_t weakCount;
+        RefT _p
+    }
+
+    _Store _p;
+}
+
 
 /**
 Tuple of values, for example $(D Tuple!(int, string)) is a record that
