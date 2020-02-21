@@ -1,13 +1,12 @@
 # Makefile for zlib64
 
 MODEL=64
-VCDIR=\Program Files (x86)\Microsoft Visual Studio 10.0\VC
 
-CC=$(VCDIR)\bin\amd64\cl
-LD=$(VCDIR)\bin\amd64\link
-LIB=$(VCDIR)\bin\amd64\lib
+# set by caller
+CC=
+LIB=
 
-CFLAGS=/O2 /nologo /I"$(VCDIR)\INCLUDE"
+CFLAGS=/O2 /nologo "$(INCLUDE)"
 LIBFLAGS=/nologo
 LDFLAGS=/nologo
 O=.obj

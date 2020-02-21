@@ -34,8 +34,9 @@ SDKDIR=\Program Files (x86)\Microsoft SDKs\Windows\v7.0A
 
 ## Flags for VC compiler
 
-#CFLAGS=/Zi /nologo /I"$(VCDIR)\INCLUDE" /I"$(SDKDIR)\Include"
-CFLAGS=/O2 /nologo /I"$(VCDIR)\INCLUDE" /I"$(SDKDIR)\Include"
+INCLUDE=/I"$(VCDIR)"\INCLUDE /I"$(SDKDIR)"\Include
+#CFLAGS=/Zi /nologo $(INCLUDE)"
+CFLAGS=/O2 /nologo $(INCLUDE)
 
 ## Location of druntime tree
 
@@ -470,17 +471,17 @@ CC32=$(CC)\..\..\cl
 
 # build phobos32mscoff.lib
 phobos32mscoff:
-	"$(MAKE)" -f win64.mak "DMD=$(DMD)" "MAKE=$(MAKE)" MODEL=32mscoff "CC=$(CC32)" "AR=$(AR)" "VCDIR=$(VCDIR)" "SDKDIR=$(SDKDIR)"
+	"$(MAKE)" -f win64.mak "DMD=$(DMD)" "MAKE=$(MAKE)" MODEL=32mscoff "CC=$(CC32)" "AR=$(AR)" "VCDIR=$(VCDIR)" "SDKDIR=$(SDKDIR)" "INCLUDE=$(INCLUDE)"
 
 # run unittests for 32-bit COFF version
 unittest32mscoff:
-	"$(MAKE)" -f win64.mak "DMD=$(DMD)" "MAKE=$(MAKE)" MODEL=32mscoff "CC=$(CC32)" "AR=$(AR)" "VCDIR=$(VCDIR)" "SDKDIR=$(SDKDIR)" unittest
+	"$(MAKE)" -f win64.mak "DMD=$(DMD)" "MAKE=$(MAKE)" MODEL=32mscoff "CC=$(CC32)" "AR=$(AR)" "VCDIR=$(VCDIR)" "SDKDIR=$(SDKDIR)" "INCLUDE=$(INCLUDE)" unittest
 
 ######################################################
 
 $(ZLIB): $(SRC_ZLIB)
 	cd etc\c\zlib
-	"$(MAKE)" -f win64.mak MODEL=$(MODEL) zlib$(MODEL).lib "CC=$(CC)" "LIB=$(AR)" "VCDIR=$(VCDIR)"
+	"$(MAKE)" -f win64.mak MODEL=$(MODEL) zlib$(MODEL).lib "CC=$(CC)" "LIB=$(AR)" "INCLUDE=$(INCLUDE)"
 	cd ..\..\..
 
 ######################################################
